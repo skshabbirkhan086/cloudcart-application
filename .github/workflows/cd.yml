@@ -1,0 +1,129 @@
+name: Build, Push and Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, production]
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cloudcart-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  IMAGE_TAG: sha-${{ github.sha }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      registry: ${{ steps.login-ecr.outputs.registry }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS through OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: cloudcart-${{ github.run_id }}
+
+      - id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build images
+        run: |
+          docker build -t "$ECR_REGISTRY/cloudcart-backend:$IMAGE_TAG" backend
+          docker build -t "$ECR_REGISTRY/cloudcart-worker:$IMAGE_TAG" worker
+          docker build -t "$ECR_REGISTRY/cloudcart-frontend:$IMAGE_TAG" frontend
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+
+      - name: Scan backend image
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/cloudcart-backend:${{ env.IMAGE_TAG }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Push immutable images
+        run: |
+          docker push "$ECR_REGISTRY/cloudcart-backend:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/cloudcart-worker:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/cloudcart-frontend:$IMAGE_TAG"
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: cloudcart-deploy-${{ github.run_id }}
+
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "${{ vars.AWS_REGION }}"
+
+      - name: Create namespace and secret
+        run: |
+          kubectl create namespace cloudcart-dev --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n cloudcart-dev create secret generic cloudcart-secrets \
+            --from-literal=POSTGRES_PASSWORD='${{ secrets.POSTGRES_PASSWORD }}' \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Render immutable image references
+        run: |
+          cp -R k8s rendered
+          sed -i "s|BACKEND_IMAGE|${{ needs.build.outputs.registry }}/cloudcart-backend:${IMAGE_TAG}|g" rendered/base/backend.yaml
+          sed -i "s|WORKER_IMAGE|${{ needs.build.outputs.registry }}/cloudcart-worker:${IMAGE_TAG}|g" rendered/base/worker.yaml
+          sed -i "s|FRONTEND_IMAGE|${{ needs.build.outputs.registry }}/cloudcart-frontend:${IMAGE_TAG}|g" rendered/base/frontend.yaml
+
+      - name: Deploy
+        run: kubectl apply -k rendered/overlays/dev
+
+      - name: Wait for rollout
+        run: |
+          kubectl -n cloudcart-dev rollout status deployment/backend --timeout=5m
+          kubectl -n cloudcart-dev rollout status deployment/worker --timeout=5m
+          kubectl -n cloudcart-dev rollout status deployment/frontend --timeout=5m
+
+      - name: Get application URL
+        id: url
+        shell: bash
+        run: |
+          for i in {1..40}; do
+            HOST=$(kubectl -n cloudcart-dev get ingress cloudcart -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            if [[ -n "$HOST" ]]; then
+              echo "url=http://$HOST" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 15
+          done
+          exit 1
+
+      - name: Smoke test
+        run: |
+          curl --retry 10 --retry-delay 10 --fail "${{ steps.url.outputs.url }}/"
+          curl --retry 10 --retry-delay 10 --fail "${{ steps.url.outputs.url }}/health/ready"
+
+      - name: Deployment summary
+        run: |
+          echo "### CloudCart deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.url.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,11 @@
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - postgres.yaml
+  - redis.yaml
+  - backend.yaml
+  - worker.yaml
+  - frontend.yaml
+  - ingress.yaml
+  - monitoring.yaml
+  - networkpolicy.yaml

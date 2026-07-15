@@ -1,0 +1,67 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cloudcart-backend
+  namespace: cloudcart-dev
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels: {app: backend}
+  namespaceSelector:
+    matchNames: [cloudcart-dev]
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cloudcart-worker
+  namespace: cloudcart-dev
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels: {app: worker}
+  namespaceSelector:
+    matchNames: [cloudcart-dev]
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cloudcart-alerts
+  namespace: cloudcart-dev
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: cloudcart
+      rules:
+        - alert: CloudCartBackendDown
+          expr: sum(up{namespace="cloudcart-dev",service="backend"}) == 0
+          for: 2m
+          labels: {severity: critical}
+          annotations:
+            summary: CloudCart backend is unavailable
+        - alert: CloudCartHighErrorRate
+          expr: |
+            sum(rate(cloudcart_http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(cloudcart_http_requests_total[5m])), 1)
+            > 0.05
+          for: 5m
+          labels: {severity: warning}
+          annotations:
+            summary: CloudCart 5xx error rate is above 5%
+        - alert: CloudCartWorkerFailures
+          expr: increase(cloudcart_worker_orders_failed_total[10m]) > 3
+          for: 2m
+          labels: {severity: warning}
+          annotations:
+            summary: CloudCart worker is repeatedly failing
