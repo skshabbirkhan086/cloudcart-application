@@ -48,12 +48,12 @@ jobs:
         with:
           recursive: true
 
-      # - name: Checkov
-      #   uses: bridgecrewio/checkov-action@v12
-      #   with:
-      #     directory: k8s
-      #     framework: kubernetes
-      #     soft_fail: false
+      - name: Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: k8s
+          framework: kubernetes
+          soft_fail: false
 
       - name: Build images
         run: |

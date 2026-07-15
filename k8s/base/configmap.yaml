@@ -4,5 +4,8 @@ metadata:
   name: cloudcart-config
   namespace: cloudcart-dev
 data:
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_NAME: cloudcart
+  DB_USER: cloudcart
   REDIS_URL: redis://redis:6379/0
-  DATABASE_URL: postgresql+psycopg://cloudcart:$(POSTGRES_PASSWORD)@postgres:5432/cloudcart

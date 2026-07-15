@@ -4,31 +4,93 @@ metadata:
   name: redis
   namespace: cloudcart-dev
 spec:
-  selector: {app: redis}
-  ports: [{port: 6379, targetPort: 6379}]
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: redis
   namespace: cloudcart-dev
+  annotations:
+    checkov.io/skip1: CKV_K8S_43=The lab uses a fixed major/minor image tag; production must pin an organization-approved image digest.
 spec:
   replicas: 1
   selector:
-    matchLabels: {app: redis}
+    matchLabels:
+      app: redis
   template:
     metadata:
-      labels: {app: redis}
+      labels:
+        app: redis
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: redis
           image: redis:8-alpine
-          args: ["redis-server","--appendonly","yes"]
-          ports: [{containerPort: 6379}]
+          imagePullPolicy: Always
+          args:
+            - redis-server
+            - --appendonly
+            - "yes"
+            - --dir
+            - /data
+          ports:
+            - name: redis
+              containerPort: 6379
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities:
+              drop:
+                - ALL
+          startupProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            failureThreshold: 30
+            periodSeconds: 5
           readinessProbe:
-            exec: {command: ["redis-cli","ping"]}
+            exec:
+              command: ["redis-cli", "ping"]
             initialDelaySeconds: 5
             periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
           resources:
-            requests: {cpu: 50m, memory: 64Mi}
-            limits: {cpu: 250m, memory: 256Mi}
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

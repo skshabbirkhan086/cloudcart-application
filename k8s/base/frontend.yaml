@@ -4,8 +4,12 @@ metadata:
   name: frontend
   namespace: cloudcart-dev
 spec:
-  selector: {app: frontend}
-  ports: [{port: 80, targetPort: 8080}]
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -15,27 +19,74 @@ metadata:
 spec:
   replicas: 2
   selector:
-    matchLabels: {app: frontend}
+    matchLabels:
+      app: frontend
   template:
     metadata:
-      labels: {app: frontend}
+      labels:
+        app: frontend
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
-        seccompProfile: {type: RuntimeDefault}
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: frontend
-          image: FRONTEND_IMAGE
-          ports: [{containerPort: 8080}]
+          image: FRONTEND_IMAGE@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            failureThreshold: 30
+            periodSeconds: 5
           readinessProbe:
-            httpGet: {path: /, port: 8080}
+            httpGet:
+              path: /
+              port: http
             periodSeconds: 10
+            timeoutSeconds: 3
           livenessProbe:
-            httpGet: {path: /, port: 8080}
+            httpGet:
+              path: /
+              port: http
             periodSeconds: 15
+            timeoutSeconds: 3
           securityContext:
             allowPrivilegeEscalation: false
-            capabilities: {drop: ["ALL"]}
+            privileged: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
           resources:
-            requests: {cpu: 100m, memory: 64Mi}
-            limits: {cpu: 300m, memory: 128Mi}
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 128Mi
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
